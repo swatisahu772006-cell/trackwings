@@ -1,0 +1,121 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: users
+// Fields:
+//   - email: string (required)
+//   - displayName: string (required)
+//   - photoURL: string (optional)
+//   - role: string (required, enum: ['user', 'admin'])
+//
+// Collection: habits
+// Fields:
+//   - name: string (required, max 50 chars)
+//   - icon: string (required, max 10 chars)
+//   - color: string (required, regex hex)
+//   - userId: string (required, matches auth.uid)
+//   - createdAt: timestamp (required)
+//
+// Collection: completions
+// Fields:
+//   - habitId: string (required)
+//   - date: string (required, YYYY-MM-DD)
+//   - userId: string (required, matches auth.uid)
+//   - createdAt: timestamp (required)
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.userId;
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}$");
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "swatisahu772006@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return data.keys().hasOnly(['email', 'displayName', 'photoURL', 'role']) &&
+             data.email is string && isValidEmail(data.email) &&
+             data.displayName is string && data.displayName.size() > 0 && data.displayName.size() < 100 &&
+             (!('photoURL' in data) || data.photoURL is string) &&
+             data.role in ['user', 'admin'];
+    }
+
+    function isValidHabit(data) {
+      return data.keys().hasOnly(['name', 'icon', 'color', 'userId', 'createdAt']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 50 &&
+             data.icon is string && data.icon.size() > 0 && data.icon.size() <= 10 &&
+             data.color is string && data.color.matches("^#[0-9a-fA-F]{6}$") &&
+             data.userId == request.auth.uid &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidCompletion(data) {
+      return data.keys().hasOnly(['habitId', 'date', 'userId', 'createdAt']) &&
+             data.habitId is string &&
+             data.date is string && isValidDateString(data.date) &&
+             data.userId == request.auth.uid &&
+             data.createdAt is timestamp;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isAuthenticated() && isOwner(userId) && isValidUser(request.resource.data) && (request.resource.data.role == 'user' || isAdmin());
+      allow update: if isAuthenticated() && isOwner(userId) && isValidUser(request.resource.data) && (request.resource.data.role == resource.data.role || isAdmin());
+    }
+
+    match /habits/{habitId} {
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidHabit(request.resource.data);
+      allow update: if isAuthenticated() && isDocOwner() && isValidHabit(request.resource.data) && request.resource.data.userId == resource.data.userId;
+      allow delete: if isAuthenticated() && isDocOwner();
+    }
+
+    match /completions/{completionId} {
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidCompletion(request.resource.data);
+      allow update: if isAuthenticated() && isDocOwner() && isValidCompletion(request.resource.data) && request.resource.data.userId == resource.data.userId;
+      allow delete: if isAuthenticated() && isDocOwner();
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
